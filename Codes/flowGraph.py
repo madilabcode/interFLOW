@@ -5,8 +5,6 @@ import numpy as np
 import math
 from rpy2.robjects import NULL, r
 # import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, roc_auc_score
-from sklearn.ensemble import RandomForestClassifier
 import scipy.stats as sc
 import networkx as nx
 import pickle
@@ -447,10 +445,7 @@ def enrch_tfs(exp,tfs, reduce):
 #### delete reuce and do permutation fals
 
 def DSA_anaylsis(exp, recptors, ProtAction, ProtInfo, tfs,markers=None,recps_for_roc = None,reduce=True,do_permutation=True,wights_flag=True):
-   # tfs_scores = ce.CERNO_alg(exp.apply(lambda x: x.astype(bool).sum(),axis=1), tfs)
     tfs_scores = enrch_tfs(exp,tfs,reduce)
-    #tf_pd = pd.DataFrame({"pvalue": tfs_scores.values()},index=tfs_scores.keys())
-    #tf_pd = tf_pd.merge(pd.DataFrame(exp.mean(axis=1)),left_index=True, right_index=True,how="inner")
     gpf = build_flowing_network_with_normlized_wights(ProtAction, tfs_scores, exp,recps_for_roc=recps_for_roc,wights_flag=wights_flag)
     flow_values = []
     flow_dicts = {}

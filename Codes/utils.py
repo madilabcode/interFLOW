@@ -3,7 +3,6 @@ import numpy as np
 import random
 import math
 import scipy.stats as st
-from Codes import randomForstSIngleClassfier as rf
 import zlib, json, base64
 from rpy2.robjects import r
 from rpy2 import robjects as ro
@@ -58,55 +57,6 @@ def dsa_with_lig(toExp, fromExp, DSA_Table, legRet):
 
     return toExp.apply(np.sum, axis=0)
 
-
-def DSA_DE(dsa1, dsa2):
-    # dsa1 = dsa_with_lig(args1)
-
-    dsa1 = list(filter(lambda x: not math.isnan(x), list(dsa1)))
-    dsa2 = list(filter(lambda x: not math.isnan(x), list(dsa2)))
-    stat, pval = st.ttest_ind(dsa1, dsa2)
-    return stat, pval
-
-
-def DSA_Classfier(args1, args2, modle=None, return_modle=False, plot_name="result"):
-    args1 = tuple(args1)
-    args2 = tuple(args2)
-
-    dsa_t1 = dsa_table_update_to_lig(*args1)
-    dsa_t2 = dsa_table_update_to_lig(*args2)
-
-    dsa_t1 = dsa_t1.transpose()
-    dsa_t2 = dsa_t2.transpose()
-
-    dsa_t1["ident"] = 1
-    dsa_t2["ident"] = 0
-
-    if len(dsa_t1.index) > len(dsa_t2.index):
-        rows = random.sample(list(dsa_t1.index), len(dsa_t2.index))
-        dsa_t1 = dsa_t1.loc[dsa_t1.index.isin(rows), :]
-    else:
-        rows = random.sample(list(dsa_t2.index), len(dsa_t1.index))
-        dsa_t2 = dsa_t2.loc[dsa_t2.index.isin(rows), :]
-
-    dsa_t1.index = range(len(dsa_t1.index))
-    dsa_t2.index = range(len(dsa_t2.index))
-
-    dsa_table = pd.concat([dsa_t1, dsa_t2], axis=0)
-
-    for col in dsa_table.columns:
-        dsa_table[col] = dsa_table[col].apply(lambda x: 0 if math.isnan(x) else x)
-
-    dsa_table.index = range(len(dsa_table.index))
-
-    if modle is not None:
-        ls = rf.use_ex_modle(modle, dsa_table, plot_name)
-    else:
-        ls = rf.random_forst_expresstion(dsa_table, plot_name=plot_name, returnModle=return_modle)
-
-    if return_modle:
-        return dsa_table, ls[0], ls[1], ls[2]
-
-    return dsa_table, ls[0], ls[1]
 
 def save_obj(obj, name):
     with open(name + '.pkl', 'wb') as f:
