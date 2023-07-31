@@ -257,11 +257,12 @@ class FlowGraph:
         orig_flow = np.array([sum(dict(vec).values()) for vec in flow_dic.values()])
         flows = []
         for _ in range(num_of_perm):
-            perm = self.premutate_graph(self.pa)
-            gpf_perm = nx.from_pandas_edgelist(perm, "Source", "Target", edge_attr="capacity", create_using=nx.DiGraph())
-            perm_flow_dict = nx.maximum_flow(gpf_perm, "source_node","sink", flow_func=nx.algorithms.flow.dinitz)[1]
-            flow_values = [sum(dict(vec).values()) for vec in perm_flow_dict.values()]
-            flows.append(flow_values)
+            #perm = self.premutate_graph(self.pa)
+            #gpf_perm = nx.from_pandas_edgelist(perm, "Source", "Target", edge_attr="capacity", create_using=nx.DiGraph())
+            #perm_flow_dict = nx.maximum_flow(gpf_perm, "source_node","sink", flow_func=nx.algorithms.flow.dinitz)[1]
+            #flow_values = [sum(dict(vec).values()) for vec in perm_flow_dict.values()]
+
+            flows.append(self.edge_dgree_perm("source_node"))
         
         flows = np.array(flows).T
         greater_than = np.greater_equal(flows, orig_flow[:,np.newaxis])
@@ -324,11 +325,9 @@ class FlowGraph:
         
         return pd.concat([sub_graph,inf_sub_graph])
         
-    def edge_dgree_perm(self, source_node,cap=None):
-        if cap is None:
-            cap = self.capcity_network
-        
-        cap_df = nx.to_pandas_edgelist(cap)
+    def edge_dgree_perm(self, source_node):
+
+        cap_df = self.pa.copy()
         cap_df.columns = ["Source", "Target", "capacity"]
         ##### 3 bins
         cap_df.sort_values("capacity",inplace=True)
@@ -339,10 +338,10 @@ class FlowGraph:
         sub_cup3 = self.premutate_graph(cap_df.loc[cap_df.capacity > top2,:])
         cap_df = pd.concat([sub_cup1,sub_cup2,sub_cup3])
         ###on bine!
-        cap_df = self.premutate_graph(cap_df)
         graph =  nx.from_pandas_edgelist(cap_df, "Source", "Target", edge_attr="capacity", create_using=nx.DiGraph())
         flow_value, flow =  nx.maximum_flow(graph, source_node ,"sink", flow_func=nx.algorithms.flow.dinitz)
-        return flow_value
+        flow_values = [sum(dict(vec).values()) for vec in flow.values()]
+        return flow_values
 
 
     def calculate_p_value_for_tfs(self,num_of_perm=100):
