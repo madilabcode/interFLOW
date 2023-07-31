@@ -43,7 +43,7 @@ class FlowGraph:
         self.max_multy_flow = None
         self.pa = self.run_multiy_source_flow()
         if do_permutation:
-            self.pvalues = self.calcualte_pvalue_for_every_node(num_of_perm=1)
+            self.pvalues = self.calcualte_pvalue_for_every_node(num_of_perm=10)
 
     @classmethod
     def make_capcity_graph(cls, network_dict):
@@ -201,6 +201,20 @@ class FlowGraph:
         
         return  pa, pd.DataFrame(all_tfs.sort_values(axis=0, ascending=False))
 
+    
+    def calculate_max_flow_for_one_tf(self, tf):
+        pat = self.pa.copy()
+        all_tf = np.unique(pat.loc[pat["Target"] == "sink", "Source"])
+        all_tf = np.delete(all_tf, np.where(all_tf == tf))
+        pat["isNotTf"] = pat.apply(
+                lambda row: False if row["Source"] in all_tf  or  row["Target"] in all_tf else True, axis=1)
+        pat = pat.loc[pat["isNotTf"], :]
+        gpf = nx.from_pandas_edgelist(pat, "Source", "Target", edge_attr="capacity", create_using=nx.DiGraph())
+        flow_value, flow_dict  = nx.maximum_flow(gpf, "source_node", tf, flow_func=nx.algorithms.flow.dinitz)
+
+        df = self.make_df_flow(flow=flow_dict)
+        return df.loc[df.flow >= 0.1]
+    
     def calculate_significant_tf_Multy_sinc(self):
         pa = self.run_multiy_source_flow()
         all_genes = np.unique(list(pa.loc[pa["Target"] == "sink", "Source"]))

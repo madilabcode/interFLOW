@@ -1,0 +1,12 @@
+,Source,Target,flow
+17,Ar,Sumo1,0.146
+27,Sumo1,Pml,0.117
+34,Lck,Csnk2b,0.139
+36,Stat3,Pml,0.121
+37,Csnk2b,Sumo2,0.139
+38,Sumo2,Pml,0.139
+43,Ccr5,Lck,0.142
+46,Ccr5,Stat3,0.121
+78,source_node,Ar,0.256
+80,source_node,Ccr5,0.282
+82,source_node,Fas,0.102

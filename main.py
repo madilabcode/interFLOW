@@ -121,7 +121,7 @@ def ExpTables(obj, toName, fromName, assay=assay):
 
 
 
-def run_pipline(args, objName, max_workers=1):
+def run_pipline(args, objName, max_workers=20):
     r["source"]("Codes/Ligand_Receptor_pipeline.R")
     lr_list = {}
     dsa_tables = {}
@@ -164,7 +164,7 @@ def main():
     except:
         raise Exception("no input CSV found")
 
-    path = list(conf.loc[conf["Var"] == "obj", "Value"])[0]
+    path = list(conf.loc[conf["Var"] == "Obj", "Value"])[0]
 
 
 
