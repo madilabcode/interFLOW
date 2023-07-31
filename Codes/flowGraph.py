@@ -43,7 +43,7 @@ class FlowGraph:
         self.max_multy_flow = None
         self.pa = self.run_multiy_source_flow()
         if do_permutation:
-            self.pvalues = self.calcualte_pvalue_for_every_node(num_of_perm=10)
+            self.pvalues = self.calcualte_pvalue_for_every_node(num_of_perm=100)
 
     @classmethod
     def make_capcity_graph(cls, network_dict):

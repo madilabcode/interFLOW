@@ -17,7 +17,7 @@ import pickle
 
 assay = "data"
 
-def LRP(path, to_name, from_name, plot_path=None, thrshold=0.1, per_claster=False):
+def LRP(path, to_name, from_name, plot_path=None, thrshold=0.2, per_claster=False):
     with localconverter(default_converter + rpyp.converter):
         print(f"{to_name}_{from_name}")
         r["source"]("Codes/Ligand_Receptor_pipeline.R")

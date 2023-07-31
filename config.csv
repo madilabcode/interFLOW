@@ -1,5 +1,5 @@
 Var,Value
 Obj,pbmc_SELP.RData
-Receptors Clusters,2
-Ligand Clusters,4
+Receptors Clusters,2 4
+Ligand Clusters,4 1 
 Obj Name,SELP
