@@ -36,10 +36,11 @@ class GraphsDicts:
 
 
 class FlowGraph:
-    def __init__(self, flow_dics, capcity_network,do_permutation = True):
+    def __init__(self, flow_dics, capcity_network,do_permutation=True, sim_flag=False):
         self.flow_dics = flow_dics
         self.capcity_network = capcity_network
-        self.max_flow_dict = self.calculate_max_flow_for_all_recp()
+        if not sim_flag:
+            self.max_flow_dict = self.calculate_max_flow_for_all_recp()
         self.max_multy_flow = None
         self.pa = self.run_multiy_source_flow()
         if do_permutation:
@@ -280,8 +281,9 @@ class FlowGraph:
     def run_multiy_source_flow(self):
         pa = self.build_multy_source_network()
         gpf = nx.from_pandas_edgelist(pa, "Source", "Target", edge_attr="capacity", create_using=nx.DiGraph())
-        max_flow = nx.maximum_flow(gpf, "source_node","sink", flow_func=nx.algorithms.flow.dinitz)[0]
+        max_flow, flow_dict = nx.maximum_flow(gpf, "source_node","sink", flow_func=nx.algorithms.flow.dinitz)
         self.max_multy_flow = max_flow
+        self.multy_flow_dict = flow_dict
         return pa 
 
     def calculate_significant_tf_Multy_sinc(self):
