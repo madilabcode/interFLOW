@@ -17,6 +17,7 @@ import warnings
 from scipy.stats import ranksums
 import statsmodels.stats.multitest
 import dill
+from scipy.stats import rankdata
 warnings.filterwarnings('ignore') 
 
 CUTOFF = 0.0
@@ -394,11 +395,14 @@ def mi(exp,pa, recps_for_roc=None):
 
     clusterex.drop("not_zero",axis=1,inplace = True)
 
+    exp = exp.apply(lambda x: rankdata(x) // 100, axis=1)
     pa = pa.loc[(pa.Source.isin(exp.index)) &  (pa.Target.isin(exp.index) )]
     pa["wights"] = pa.apply(lambda x : mis(exp.loc[x.Source],exp.loc[x.Target]),axis=1)
     pa["wights"] = pa.apply(lambda x: x.wights if x.Source in clusterex.index and x.Target in clusterex.index else 0 ,axis=1)
     pa["wights"] = (pa["wights"] - pa["wights"].min())/(pa["wights"].max() - pa["wights"].min())
     pa["capacity"] = pa["wights"]
+   # pa.loc[pa.capacity < np.inf,"capacity"] -= pa[pa.capacity < np.inf].capacity.mean()
+    #pa["capacity"] = pa["capacity"].apply(lambda x: max(0,x))
     pa.drop("wights",axis=1,inplace = True)
 
     return pa
