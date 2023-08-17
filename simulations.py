@@ -14,8 +14,11 @@ from Codes import utils
 import rpy2.robjects.pandas2ri as rpyp
 from sklearn.metrics import roc_auc_score, roc_curve, auc
 from scipy.stats import ranksums
+from scipy.stats import norm, nbinom
 from statsmodels.stats.multitest import fdrcorrection
 import concurrent.futures
+from scipy.stats import spearmanr
+import scanpy as sc
 import pickle
 import networkx as nx
 import concurrent.futures
@@ -102,68 +105,34 @@ def find_path(pa, receptors, tfs, lr, num_of_tfs=5, num_of_recp=15):
     #ligands =  pd.Series(list(filter(lambda x: x in list(pa.Source.drop_duplicates()) + list(pa.Target.drop_duplicates()), ligands)))
     return all_nodes, selected_recep, ligands , selected_tf, targets
 
-def build_syntatic_data2(pa, path ,alpha = 0.7, num_of_cells=1000):
+def build_corraltion(pa, path ,alpha = 0.7, num_of_cells=1000):
     g = nx.from_pandas_edgelist(pa, "Source", "Target", create_using=nx.DiGraph())
     nodes = list(g.nodes)
     exp = np.random.normal(0, 1, size = (len(nodes),num_of_cells))
     exp =  pd.DataFrame(exp, index=nodes)
     corr_exp =  np.random.normal(0, 1, size = num_of_cells)
     exp.loc[path] = alpha * corr_exp + (1 - alpha) *exp.loc[path] 
-    exp *= np.random.binomial(1,0.75,exp.shape)
+    #exp *= np.random.binomial(1,0.75,exp.shape)
     print(np.corrcoef(exp.loc[path]).mean())
     return exp
 
-def build_syntatic_data(pa, path ,corr_mean = 0.7, de_up=None, de_down=None,targets=None, de_size=10,latent_shape=100, corr_size=20, num_of_cells=1000):
-    mus = np.zeros(latent_shape)
+def build_syntatic_data(pa, path ,alpha = 0.7, num_of_cells=1000):
+    n, p = 5, 0.5
     g = nx.from_pandas_edgelist(pa, "Source", "Target", create_using=nx.DiGraph())
-
-    if not de_up is None:
-        path = list(np.unique(list(path) + list(de_up) + list(de_down)))
-        mus[:de_size] = np.random.normal(0.25,0.1,de_size)
-        mus[de_size : 2*de_size] = np.random.normal(-0.25,0.1,de_size)
-        mus[2*de_size : 3*de_size] = np.random.normal(0.15,0.1,de_size)
-        nodes = list(np.unique(list(g.nodes) + list(de_up) + list(de_down) + list(targets)))
-    else:
-        nodes = list(g.nodes)
-
-    
-    #sigma =  np.random.uniform(low=0, high=0.7,size=(latent_shape, latent_shape) )
-    sigma = np.random.normal(0,0.1, size=(latent_shape, latent_shape))
-    sigma[:corr_size,:corr_size] = np.random.normal(corr_mean,0.1, size=(corr_size, corr_size))
-    sigma = sigma * (sigma > 0)
-    sigma[:corr_size,:corr_size] = np.random.uniform(low=0.5, high=1,size=(corr_size, corr_size))
-    np.fill_diagonal(sigma,1)
-    samples = np.random.multivariate_normal(mus, sigma, num_of_cells)
-    indexs = [nodes.index(x) for x in path]
-    A = np.random.uniform(-1,1, (len(nodes), latent_shape))
-    A[indexs,corr_size:] = 0
-    #A[indexs,:corr_size] = np.random.uniform(0,0.5,(len(indexs), corr_size))
-
-    mask = np.arange(A.shape[0])
-    mask = list(filter(lambda x: not x in indexs, mask))
-    A[mask,:corr_size] = 0
-    if not de_up is None:
-        indexs_up = [nodes.index(x) for x in de_up ]
-        indexs_down = [nodes.index(x) for x in de_down]
-        indexs_targets = [nodes.index(x) for x in targets]
-
-        A[indexs_up,de_size:] = 0
-        A[indexs_down,2*de_size:] = 0
-        A[indexs_down,:de_size] = 0
-        A[indexs_targets,3*de_size:] = 0
-        A[indexs_targets,:2*de_size] = 0
-
-        mus *= -1
-        samples2 = np.random.multivariate_normal(mus, sigma, num_of_cells)
-        samples = np.concatenate([samples,samples2])
-
-    exp = pd.DataFrame(A@samples.T, index=nodes)
-    exp = ((exp.T - exp.mean(axis=1)) / exp.std(axis=1)).T
-    exp = 0.7*exp + 0.3* np.random.normal(0,1,exp.shape)
-    exp *= np.random.binomial(1,0.8,exp.shape)
-    if not de_up is None:
-        return exp[list(range(num_of_cells))], exp[list(range(num_of_cells, 2*num_of_cells))]
-    return exp
+    nodes = list(g.nodes)
+    indexs = list(map(lambda x: nodes.index(x), path))
+    exp = build_corraltion(pa, path ,alpha, num_of_cells)
+    df = pd.DataFrame(norm.cdf(exp.T,exp.mean(axis=1), exp.std(axis=1)))
+    df.apply(lambda x: nbinom.ppf(x,n,p), axis=1 )
+    df  = df.apply(lambda x: nbinom.ppf(x,np.random.random_integers(5,100),p), axis=0 ).T
+    df *= np.random.binomial(1,0.85,df.shape)
+    df.index = list(g.nodes)
+    obj = sc.AnnData(df.T)
+    sc.pp.normalize_total(obj, target_sum=1e4)
+    sc.pp.log1p(obj)
+    df = pd.DataFrame(obj.X.T, index=nodes)
+    correlation_matrix, p_values = spearmanr(df.loc[path], axis=1)
+    return df, correlation_matrix.mean()
 
 def run_anaylsis(exp, pa, tfs, receptors, path, path_neg=None):
     gpf = tfg.build_flowing_network_with_normlized_wights(pa, tfs, exp,wights_flag=True)
@@ -180,28 +149,29 @@ def run_anaylsis(exp, pa, tfs, receptors, path, path_neg=None):
     return flow_df
 
 def calculate_roc(flow_df, path, path_neg):
-    flow_df = flow_df.loc[flow_df.node.isin(list(path)+list(path_neg))]
+    #flow_df = flow_df.loc[flow_df.node.isin(list(path)+list(path_neg))]
     labels = flow_df.node.isin(path)
     fpr, tpr, _= roc_curve (labels, flow_df.flow, pos_label=1)
     auc = roc_auc_score (labels, flow_df.flow)
-    return fpr, tpr, auc
+    return auc
 
 def calculate_roc_tfs(flow_df, selected_tf,  tfs):
     flow_df = flow_df.loc[flow_df.node.isin(tfs)]
     labels = flow_df.node.isin(selected_tf)
     fpr, tpr, _= roc_curve (labels, flow_df.flow, pos_label=1)
     auc = roc_auc_score (labels, flow_df.flow)
-    return fpr, tpr, auc
+    return auc
 
 def pipeline_downstream(args):
     pa, receptors, tfs, lr, corr = args
     path, _, _, selected_tf, _= find_path(pa, receptors, tfs, lr)
     #path_neg, _, _, _, _= find_path(pa.loc[(~pa.Source.isin(path)) & (~pa.Target.isin(path))], receptors, tfs, lr)
-    exp = build_syntatic_data2(pa, path, corr)
+    path_neg, _, _, _, _= find_path(pa, receptors, tfs, lr)
+    exp, corr_mean = build_syntatic_data(pa, path, corr)
     flow_df = run_anaylsis(exp, PA.copy(), tfs, receptors, path)
-    #roc = calculate_roc(flow_df, path, path_neg)
-    roc = calculate_roc_tfs(flow_df, selected_tf,  tfs)
-    return roc
+    roc = calculate_roc(flow_df, path, path_neg)
+    #roc = calculate_roc_tfs(flow_df, selected_tf,  tfs)
+    return roc, corr_mean
 
 def find_de_lr(exp_r, exp_l, lr):
     genes = pd.Series(exp_r.index)
@@ -234,8 +204,10 @@ def pipeline_LR(args):
 
 
 def make_box_plots(results, corr_range, num_of_repat):
-    results = np.array(results).squeeze()[:,:,-1]
-    df = pd.DataFrame({"ROCAUC" : results.reshape(-1), "Pathway Corr": [corr/2 for corr in corr_range for _ in range(num_of_repat) ]})
+    cors =  np.array(results)[:,:,1]
+    cors =  cors.mean(axis=1)
+    results = np.array(results)[:,:,0].squeeze()
+    df = pd.DataFrame({"ROCAUC" : results.reshape(-1), "Pathway Corr": [np.round(corr,2) for corr in cors for _ in range(num_of_repat) ]})
 
     fig, ax = plt.subplots(figsize=[13,7])
 
@@ -256,6 +228,8 @@ def main(num_of_repat=10, corr_range=[0.2,0.25,0.3,0.5,0.7,0.9], lr_flag=True):
         with concurrent.futures.ProcessPoolExecutor(max_workers=20) as executor:
             result = list(executor.map(func,[(pa, receptors, tfs, lr, corr) for _ in range(num_of_repat)]))
         results.append(result)
+    
+    tfg.save_obj(results, r"./files/test_sim")
     
     if not lr_flag:
         make_box_plots(results, corr_range, num_of_repat)
@@ -302,6 +276,11 @@ def plot_k_fold_roc(fpr_list, tpr_list, auc_list):
     plt.legend(loc="lower right", prop={'size': 15})
     plt.show()
 
+def test():
+    results = tfg.load_obj(r"./files/test_sim")
+    make_box_plots(results, None, num_of_repat = 10)
 
 if __name__ == "__main__":
-    main(lr_flag=False, corr_range=[0.1, 0.2, 0.3, 0.4, 0.5, 0.7])
+    main(lr_flag=False, corr_range=[0.0, 0.2, 0.4, 0.7, 0.9, 1])    
+    #main(lr_flag=False, corr_range=[0.0, 0.9])
+    #test()
