@@ -24,6 +24,7 @@ import networkx as nx
 import concurrent.futures
 import matplotlib.pyplot as plt
 import seaborn as sns
+import time 
 
 PA = pd.read_csv("files/humanProtinAction.csv")
 PI = pd.read_csv("files/humanProtinInfo.csv")
@@ -105,9 +106,7 @@ def find_path(pa, receptors, tfs, lr, num_of_tfs=5, num_of_recp=15):
     #ligands =  pd.Series(list(filter(lambda x: x in list(pa.Source.drop_duplicates()) + list(pa.Target.drop_duplicates()), ligands)))
     return all_nodes, selected_recep, ligands , selected_tf, targets
 
-def build_corraltion(pa, path ,alpha = 0.7, num_of_cells=1000):
-    g = nx.from_pandas_edgelist(pa, "Source", "Target", create_using=nx.DiGraph())
-    nodes = list(g.nodes)
+def build_corraltion(nodes, path ,alpha = 0.7, num_of_cells=1000):
     exp = np.random.normal(0, 1, size = (len(nodes),num_of_cells))
     exp =  pd.DataFrame(exp, index=nodes)
     corr_exp =  np.random.normal(0, 1, size = num_of_cells)
@@ -116,23 +115,32 @@ def build_corraltion(pa, path ,alpha = 0.7, num_of_cells=1000):
     print(np.corrcoef(exp.loc[path]).mean())
     return exp
 
-def build_syntatic_data(pa, path ,alpha = 0.7, num_of_cells=1000):
-    n, p = 5, 0.5
-    g = nx.from_pandas_edgelist(pa, "Source", "Target", create_using=nx.DiGraph())
-    nodes = list(g.nodes)
+def build_syntatic_data(nodes, path, alpha = 0.7,  means = None, de_up=None , de_down=None , num_of_cells=1000):
+    n, p = 5, 0.5     
     indexs = list(map(lambda x: nodes.index(x), path))
-    exp = build_corraltion(pa, path ,alpha, num_of_cells)
-    df = pd.DataFrame(norm.cdf(exp.T,exp.mean(axis=1), exp.std(axis=1)))
-    df.apply(lambda x: nbinom.ppf(x,n,p), axis=1 )
-    df  = df.apply(lambda x: nbinom.ppf(x,np.random.random_integers(5,100),p), axis=0 ).T
+    exp = build_corraltion(nodes, path ,alpha, num_of_cells)
+    df = pd.DataFrame(norm.cdf(exp.T,exp.mean(axis=1), exp.std(axis=1))).T
+    if means is None:
+         means = np.random.random_integers(5,100,len(nodes))
+    else:
+        means = pd.Series(means, index= nodes)
+        means.loc[de_up] += np.random.normal(15, 5, len(de_up))
+        means.loc[de_down] -= np.random.normal(15, 5, len(de_down))
+        means.loc[~means.index.isin(list(de_up) + list(de_down))] += np.random.normal(0, 2, len(nodes) - len(de_up) - len(de_down))
+        means = means.apply(lambda x: max(1,round(x))).values
+
+    df["means"] = means
+    df  = df.apply(lambda x: pd.Series(nbinom.ppf(x.drop("means"),x["means"],p)), axis=1 )
     df *= np.random.binomial(1,0.85,df.shape)
-    df.index = list(g.nodes)
+    df.index = nodes
     obj = sc.AnnData(df.T)
     sc.pp.normalize_total(obj, target_sum=1e4)
     sc.pp.log1p(obj)
     df = pd.DataFrame(obj.X.T, index=nodes)
-    correlation_matrix, p_values = spearmanr(df.loc[path], axis=1)
-    return df, correlation_matrix.mean()
+    if len(path) > 0:
+        correlation_matrix, p_values = spearmanr(df.loc[path], axis=1)
+        return df, correlation_matrix.mean() , means
+    return df, means
 
 def run_anaylsis(exp, pa, tfs, receptors, path, path_neg=None):
     gpf = tfg.build_flowing_network_with_normlized_wights(pa, tfs, exp,wights_flag=True)
@@ -148,7 +156,7 @@ def run_anaylsis(exp, pa, tfs, receptors, path, path_neg=None):
    # flow_df["flow"] += np.random.normal(0.1,0.05)
     return flow_df
 
-def calculate_roc(flow_df, path, path_neg):
+def calculate_roc(flow_df, path, path_neg=None):
     #flow_df = flow_df.loc[flow_df.node.isin(list(path)+list(path_neg))]
     labels = flow_df.node.isin(path)
     fpr, tpr, _= roc_curve (labels, flow_df.flow, pos_label=1)
@@ -162,18 +170,28 @@ def calculate_roc_tfs(flow_df, selected_tf,  tfs):
     auc = roc_auc_score (labels, flow_df.flow)
     return auc
 
+def calculate_roc_recep(flow_df, selected_recep, receptors ):
+    flow_df = flow_df.loc[flow_df.node.isin(receptors)]
+    labels = flow_df.node.isin(selected_recep)
+    fpr, tpr, _= roc_curve (labels, flow_df.flow, pos_label=1)
+    auc = roc_auc_score (labels, flow_df.flow)
+    return auc
+
 def pipeline_downstream(args):
+    np.random.seed((os.getpid() * int(time.time())) % 123456789)
     pa, receptors, tfs, lr, corr = args
     path, _, _, selected_tf, _= find_path(pa, receptors, tfs, lr)
+    g = nx.from_pandas_edgelist(pa, "Source", "Target", create_using=nx.DiGraph())
+    nodes = list(g.nodes)
     #path_neg, _, _, _, _= find_path(pa.loc[(~pa.Source.isin(path)) & (~pa.Target.isin(path))], receptors, tfs, lr)
     path_neg, _, _, _, _= find_path(pa, receptors, tfs, lr)
-    exp, corr_mean = build_syntatic_data(pa, path, corr)
+    exp, corr_mean, _ = build_syntatic_data(nodes, path, corr)
     flow_df = run_anaylsis(exp, PA.copy(), tfs, receptors, path)
-    roc = calculate_roc(flow_df, path, path_neg)
-    #roc = calculate_roc_tfs(flow_df, selected_tf,  tfs)
+    #roc = calculate_roc(flow_df, path, path_neg)
+    roc = calculate_roc_tfs(flow_df, selected_tf,  tfs)
     return roc, corr_mean
 
-def find_de_lr(exp_r, exp_l, lr):
+def find_de_lr(exp_r, exp_l, lr, selected_recep, ligands):
     genes = pd.Series(exp_r.index)
     pvalues = genes.apply(lambda x: ranksums(exp_r.loc[x], exp_l.loc[x])[1])
     pvalues = pd.Series(fdrcorrection(pvalues)[1])
@@ -188,19 +206,29 @@ def find_de_lr(exp_r, exp_l, lr):
     return pred_recp, pred_ligand
 
 def pipeline_LR(args):
-    pa, receptors, tfs, lr = args
-    path,selcted_recep, ligands, selected_tf, targets = find_path(pa, receptors, tfs, lr)
-    exp_r, exp_l = build_syntatic_data(pa, path,selcted_recep, ligands, targets=targets)
-    pd.concat([exp_r, exp_l], axis=1).to_csv(r"./validation/sim_exp.csv")
-    mask = exp_r.sample(10).index
-    exp_r.loc[mask] = 0
+    pa, receptors, tfs, lr, corr = args
+    path,selected_recep, ligands, selected_tf, targets = find_path(pa, receptors, tfs, lr)
+    g = nx.from_pandas_edgelist(pa, "Source", "Target", create_using=nx.DiGraph())
+    nodes = list(np.unique(list(g.nodes) + list(ligands)))
+    exp_r, corr_mean , means  = build_syntatic_data(nodes, path, corr, means=None)
+    exp_l, _ = build_syntatic_data(nodes, [], corr, means=means, de_up=ligands, de_down=selected_recep)#, targets=targets)
+    exp = pd.concat([exp_r, exp_l], axis=1)#.to_csv(r"./validation/sim_exp.csv")
+    #obj = sc.AnnData(exp.T)
+    #sc.pp.normalize_total(obj, target_sum=1e4)
+    #sc.pp.scale(obj)
+    #sc.pp.neighbors(obj)
+    #sc.tl.leiden(obj)
+    #sc.tl.umap(obj)
+    #sc.pl.umap(obj, color="leiden")
+   # mask = exp_r.sample(10).index
+    #exp_r.loc[mask] = 0
     exp_r.to_csv(r"./validation/scRNAseq_r.csv")
     exp_l.to_csv(r"./validation/scRNAseq_l.csv")
-    pred_recp, _ =  find_de_lr(exp_r, exp_l, lr)
-    tfs = list(pd.Series(tfs).sample(10).values) + list(selected_tf)
+    pred_recp, _ =  find_de_lr(exp_r, exp_l, lr, selected_recep, ligands)
+   # tfs = list(pd.Series(tfs).sample(10).values) + list(selected_tf)
     flow_df = run_anaylsis(exp_r,  PA.copy(), tfs, pred_recp, path)
-    roc = calculate_roc(flow_df, path)
-    return roc
+    roc = calculate_roc_recep(flow_df, selected_recep, np.unique(list(selected_recep) + list(pred_recp)))
+    return roc, corr_mean
 
 
 def make_box_plots(results, corr_range, num_of_repat):
@@ -216,7 +244,7 @@ def make_box_plots(results, corr_range, num_of_repat):
     plt.show()
 
 
-def main(num_of_repat=10, corr_range=[0.2,0.25,0.3,0.5,0.7,0.9], lr_flag=True):
+def main(num_of_repat=10, corr_range=[0.2,0.25,0.3,0.5,0.7,0.9], lr_flag=True, box_plot_flag = True):
     pa, receptors, tfs, lr = load_network()
     if lr_flag:
         func = pipeline_LR
@@ -231,9 +259,9 @@ def main(num_of_repat=10, corr_range=[0.2,0.25,0.3,0.5,0.7,0.9], lr_flag=True):
     
     tfg.save_obj(results, r"./files/test_sim")
     
-    if not lr_flag:
+    if box_plot_flag:
         make_box_plots(results, corr_range, num_of_repat)
-    
+
     else:
         result = np.array(result)
         mean_fpr = np.linspace(0, 1, 1000)
@@ -281,6 +309,6 @@ def test():
     make_box_plots(results, None, num_of_repat = 10)
 
 if __name__ == "__main__":
-    main(lr_flag=False, corr_range=[0.0, 0.2, 0.4, 0.7, 0.9, 1])    
+    main(lr_flag=True, corr_range=[0.2,0.7])    
     #main(lr_flag=False, corr_range=[0.0, 0.9])
     #test()
