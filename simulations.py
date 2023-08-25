@@ -156,6 +156,23 @@ def run_anaylsis(exp, pa, tfs, receptors, path, path_neg=None):
    # flow_df["flow"] += np.random.normal(0.1,0.05)
     return flow_df
 
+def run_anaylsis_sc(exp, pa, tfs, receptors, path, path_neg=None):
+    gpf = tfg.build_flowing_network_with_normlized_wights(pa, tfs, exp,wights_flag=True)
+    flow_values = []
+    flow_dicts = {}
+
+    for rec in receptors:
+        try:
+            flow_value, flow_dict = nx.maximum_flow(gpf, rec ,"sink", flow_func=nx.algorithms.flow.dinitz)
+            flow_values.append([rec, flow_value])
+            flow_dicts[rec] = flow_dict
+        except:
+            print("node " + rec + " is not in the graph")
+
+    df = pd.DataFrame(list(map(lambda val: val[1], flow_values)), columns=["flow"])
+    df["node"] = receptors.values
+    return df
+
 def calculate_roc(flow_df, path, path_neg=None):
     #flow_df = flow_df.loc[flow_df.node.isin(list(path)+list(path_neg))]
     labels = flow_df.node.isin(path)
@@ -179,7 +196,7 @@ def calculate_roc_recep(flow_df, selected_recep, receptors ):
 
 def pipeline_downstream(args):
     np.random.seed((os.getpid() * int(time.time())) % 123456789)
-    pa, receptors, tfs, lr, corr = args
+    pa, receptors, tfs, lr, corr, _ = args
     path, _, _, selected_tf, _= find_path(pa, receptors, tfs, lr)
     g = nx.from_pandas_edgelist(pa, "Source", "Target", create_using=nx.DiGraph())
     nodes = list(g.nodes)
@@ -191,60 +208,127 @@ def pipeline_downstream(args):
     roc = calculate_roc_tfs(flow_df, selected_tf,  tfs)
     return roc, corr_mean
 
+
+def cellchat_pred(exp):
+    with localconverter(default_converter + rpyp.converter):
+        r("library(CellChat)")
+        r("library(Seurat)")
+        r("library(dplyr)")
+
+        cell_chat = r("""   
+                        cell_chat_pred = function(exp){
+                            n = dim(exp)[2]
+                            colnames(exp) = 1:n
+                            row.names(exp) = row.names(exp) %>% toupper()
+                            meta = data.frame("Cells"= colnames(exp), "labels"=c(rep("rec",n/2), rep("ligand",n/2)))
+                            exp = sample(exp, 200)
+                            meta = meta[meta$Cells %in% colnames(exp),]
+                            exp = exp[,meta$Cells]
+                            obj <- createCellChat(object = as.matrix(exp), meta = meta, group.by = "labels")
+                            CellChatDB <- CellChatDB.human # use CellChatDB.mouse if running on mouse data
+                            showDatabaseCategory(CellChatDB)
+                            CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+                            obj@DB <- CellChatDB.use
+                            obj <- subsetData(obj) # This step is necessary even if using the whole database
+                            future::plan("multiprocess", workers = 4)
+                            obj <- identifyOverExpressedGenes(obj)
+                            obj <- identifyOverExpressedInteractions(obj)
+                            obj <- computeCommunProb(obj)
+                            #obj <- filterCommunication(obj, min.cells = 3)
+                            df.net <- subsetCommunication(obj)
+                            return(df.net)
+                        }
+                      """)
+        exp.colums = list(range(0, exp.shape[1]))
+        df_cc = cell_chat(exp)
+        df_cc["receptor"] = df_cc["receptor"].apply(lambda x: x.split("_")[0])
+        df_cc["receptor"] = df_cc["receptor"].apply(lambda x:  x[0] + x[1:].lower())
+
+        scores = df_cc.groupby("receptor")["prob"].max()
+        return scores
+        
+
+
+
 def find_de_lr(exp_r, exp_l, lr, selected_recep, ligands):
     genes = pd.Series(exp_r.index)
     pvalues = genes.apply(lambda x: ranksums(exp_r.loc[x], exp_l.loc[x])[1])
     pvalues = pd.Series(fdrcorrection(pvalues)[1])
     pvalues.index = exp_r.index
     pvalues = pvalues[pvalues <= 0.05].index
-    fc = exp_r.loc[pvalues].mean(axis=1) > exp_l.loc[pvalues].mean(axis=1)
-    up = fc[fc].index
-    down = fc[~fc].index
+    #fc = exp_r.loc[pvalues].mean(axis=1) > exp_l.loc[pvalues].mean(axis=1)
+    #up = fc[fc].index
+    #down = fc[~fc].index
+    up = exp_r.loc[pvalues].mean(axis=1) / exp_l.loc[pvalues].mean(axis=1) > 1.1
+    up = up[up].index
+    down = exp_l.loc[pvalues].mean(axis=1) / exp_r.loc[pvalues].mean(axis=1) > 1.1
+    down = down[down].index
     pred_lr = lr.loc[(lr.to.isin(up)) & (lr["from"].isin(down))]
     pred_recp = pred_lr["to"].drop_duplicates()
     pred_ligand = pred_lr["from"].drop_duplicates()
     return pred_recp, pred_ligand
 
+def roc_cellcaht(cc_scores,selected_recep, receptors ):
+    recp_df = pd.DataFrame({"def":np.zeros(len(receptors)) ,"node":receptors})
+    cc_scores = pd.DataFrame(cc_scores)
+    cc_scores.columns = ["flow"]
+    cc_scores["node"] = cc_scores.index
+    cc_scores.reset_index(inplace=True,drop=True)
+    cc_scores = cc_scores.merge(recp_df, on="node", how="right")
+    cc_scores["flow"].fillna(0, inplace=True)
+    cc_scores = cc_scores[["node","flow"]]
+    return calculate_roc_recep(cc_scores, selected_recep, receptors)
+
 def pipeline_LR(args):
-    pa, receptors, tfs, lr, corr = args
+    np.random.seed((os.getpid() * int(time.time())) % 123456789)
+    pa, receptors, tfs, lr, corr, cc_flag = args
     path,selected_recep, ligands, selected_tf, targets = find_path(pa, receptors, tfs, lr)
     g = nx.from_pandas_edgelist(pa, "Source", "Target", create_using=nx.DiGraph())
     nodes = list(np.unique(list(g.nodes) + list(ligands)))
     exp_r, corr_mean , means  = build_syntatic_data(nodes, path, corr, means=None)
     exp_l, _ = build_syntatic_data(nodes, [], corr, means=means, de_up=ligands, de_down=selected_recep)#, targets=targets)
+    exp_l.columns = list(range(exp_r.shape[1] , 2*exp_r.shape[1]))
     exp = pd.concat([exp_r, exp_l], axis=1)#.to_csv(r"./validation/sim_exp.csv")
-    #obj = sc.AnnData(exp.T)
-    #sc.pp.normalize_total(obj, target_sum=1e4)
-    #sc.pp.scale(obj)
-    #sc.pp.neighbors(obj)
-    #sc.tl.leiden(obj)
-    #sc.tl.umap(obj)
-    #sc.pl.umap(obj, color="leiden")
-   # mask = exp_r.sample(10).index
-    #exp_r.loc[mask] = 0
-    exp_r.to_csv(r"./validation/scRNAseq_r.csv")
-    exp_l.to_csv(r"./validation/scRNAseq_l.csv")
+    #exp_r.to_csv(r"./validation/scRNAseq_r.csv")
+    #exp_l.to_csv(r"./validation/scRNAseq_l.csv")
+    pd.Series(tfs).to_csv(r"./validation/tfs.csv")
     pred_recp, _ =  find_de_lr(exp_r, exp_l, lr, selected_recep, ligands)
    # tfs = list(pd.Series(tfs).sample(10).values) + list(selected_tf)
-    flow_df = run_anaylsis(exp_r,  PA.copy(), tfs, pred_recp, path)
-    roc = calculate_roc_recep(flow_df, selected_recep, np.unique(list(selected_recep) + list(pred_recp)))
+    flow_df = run_anaylsis_sc(exp_r,  PA.copy(), tfs, pred_recp, path)
+    if cc_flag:
+        cc_scores = cellchat_pred(exp)
+        #recp_df = pd.DataFrame({"def":np.zeros(len(receptors)) ,"node":receptors})
+        #flow_df = flow_df.merge(recp_df, on="node", how="right")
+        #flow_df["flow"] = flow_df["flow"].fillna(0)
+        #flow_df = flow_df[["node","flow"]]
+        roc = calculate_roc_recep(flow_df, selected_recep, pred_recp)
+        roc_cc = roc_cellcaht(cc_scores,selected_recep, pred_recp) 
+        return roc, roc_cc, corr_mean
+    
+    else:
+        roc = calculate_roc_recep(flow_df, selected_recep, np.unique(list(selected_recep) + list(pred_recp)))
     return roc, corr_mean
 
 
 def make_box_plots(results, corr_range, num_of_repat):
-    cors =  np.array(results)[:,:,1]
+    results = np.array(results)
+    cors = results[:,:,-1]
     cors =  cors.mean(axis=1)
-    results = np.array(results)[:,:,0].squeeze()
-    df = pd.DataFrame({"ROCAUC" : results.reshape(-1), "Pathway Corr": [np.round(corr,2) for corr in cors for _ in range(num_of_repat) ]})
+    resultsROC = np.array(results)[:,:,0].squeeze()
+    df = pd.DataFrame({"ROCAUC" : resultsROC.reshape(-1), "Pathway Corr": [np.round(corr,2) for corr in cors for _ in range(num_of_repat) ]})
 
+    if results.shape[-1] == 3:
+        results_cc = np.array(results)[:,:,1].squeeze()
+        df_cc = pd.DataFrame({"ROCAUC" : results_cc.reshape(-1), "Pathway Corr": [np.round(corr,2) for corr in cors for _ in range(num_of_repat) ]})
+        df = pd.concat([df, df_cc])
+        df["method"] = np.concatenate([np.repeat("interFLOW",num_of_repat* len(cors)), np.repeat("CellChat",num_of_repat* len(cors))])
     fig, ax = plt.subplots(figsize=[13,7])
-
-    sns.boxenplot(ax=ax, data=df,x="Pathway Corr", y="ROCAUC")    
+    sns.boxenplot(ax=ax, data=df,x="Pathway Corr", y="ROCAUC", hue="method")    
     sns.set_theme(style='white',font_scale=2)
     plt.show()
 
 
-def main(num_of_repat=10, corr_range=[0.2,0.25,0.3,0.5,0.7,0.9], lr_flag=True, box_plot_flag = True):
+def main(num_of_repat=10, corr_range=[0.2,0.25,0.3,0.5,0.7,0.9], lr_flag=True, box_plot_flag = True, cc_flag= True):
     pa, receptors, tfs, lr = load_network()
     if lr_flag:
         func = pipeline_LR
@@ -254,7 +338,7 @@ def main(num_of_repat=10, corr_range=[0.2,0.25,0.3,0.5,0.7,0.9], lr_flag=True, b
     results = []
     for corr in corr_range  :
         with concurrent.futures.ProcessPoolExecutor(max_workers=20) as executor:
-            result = list(executor.map(func,[(pa, receptors, tfs, lr, corr) for _ in range(num_of_repat)]))
+            result = list(executor.map(func,[(pa, receptors, tfs, lr, corr, cc_flag) for _ in range(num_of_repat)]))
         results.append(result)
     
     tfg.save_obj(results, r"./files/test_sim")
@@ -309,6 +393,6 @@ def test():
     make_box_plots(results, None, num_of_repat = 10)
 
 if __name__ == "__main__":
-    main(lr_flag=True, corr_range=[0.2,0.7])    
+    main(lr_flag=True, corr_range=[0.2, 0.9])   
     #main(lr_flag=False, corr_range=[0.0, 0.9])
     #test()
