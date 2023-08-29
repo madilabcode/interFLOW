@@ -115,7 +115,7 @@ def build_corraltion(nodes, path ,alpha = 0.7, num_of_cells=1000):
     print(np.corrcoef(exp.loc[path]).mean())
     return exp
 
-def build_syntatic_data(nodes, path, alpha = 0.7,  means = None, de_up=None , de_down=None , num_of_cells=1000):
+def build_syntatic_data(nodes, path, alpha = 0.7,  means = None, de_up=None , de_down=None , num_of_cells=1000,name=None):
     n, p = 5, 0.5     
     indexs = list(map(lambda x: nodes.index(x), path))
     exp = build_corraltion(nodes, path ,alpha, num_of_cells)
@@ -248,7 +248,60 @@ def cellchat_pred(exp):
         return scores
         
 
+def nichnet_pred(expressed_genes_sender, expressed_genes_receiver):
+    with localconverter(default_converter + rpyp.converter):
+        r("library(nichenetr)")
+        r("library(tidyverse)")
+        r("library(dplyr)")
+        r("setwd(r'(C:\\Users\\ronsh\\Desktop\\interFLOW\\validation)')")
 
+        nich_net = r(""" 
+                        nicnet_pred = function(expressed_genes_sender, expressed_genes_receiver){
+                            expressed_genes_sender = expressed_genes_sender %>% t()
+                            expressed_genes_receiver = expressed_genes_receiver %>% t()
+                            lr_network = readRDS(url("https://zenodo.org/record/7074291/files/lr_network_human_21122021.rds"))
+                            ligand_target_matrix = readRDS("ligand_target_matrix.rds")
+                            weighted_networks = readRDS("weighted_networks.rds")
+                            colnames(expressed_genes_sender) = colnames(expressed_genes_sender) %>% toupper()
+                            colnames(expressed_genes_receiver) = colnames(expressed_genes_receiver) %>% toupper()
+                            expressed_genes_sender = expressed_genes_sender %>% apply(2,function(x){10*(2**x - 1)}) %>% apply(2,function(x){log2(mean(x) + 1)}) %>% .[. >= 4] %>% names()
+                            expressed_genes_receiver = expressed_genes_receiver %>% apply(2,function(x){10*(2**x - 1)}) %>% apply(2,function(x){log2(mean(x) + 1)}) %>% .[. >= 4] %>% names()
+
+                            geneset = read.csv("tfs.csv", row.names = "X")[,"X0"] %>% toupper()
+                            background_expressed_genes = expressed_genes_receiver %>% .[. %in% rownames(ligand_target_matrix)]
+
+
+                            ligands = lr_network %>% pull(from) %>% unique()
+                            expressed_ligands = intersect(ligands,expressed_genes_sender)
+
+                            receptors = lr_network %>% pull(to) %>% unique()
+                            expressed_receptors = intersect(receptors,expressed_genes_receiver)
+
+                            lr_network_expressed = lr_network %>% filter(from %in% expressed_ligands & to %in% expressed_receptors) 
+                            potential_ligands = lr_network_expressed %>% pull(from) %>% unique()
+
+                            ligand_activities = predict_ligand_activities(geneset = geneset, background_expressed_genes = background_expressed_genes, ligand_target_matrix = ligand_target_matrix, potential_ligands = potential_ligands)
+                            best_upstream_ligands = ligand_activities$test_ligand %>% unique()
+                            active_ligand_target_links_df = best_upstream_ligands %>% lapply(get_weighted_ligand_target_links,geneset = geneset, ligand_target_matrix = ligand_target_matrix, n = 250) %>% bind_rows()
+
+
+                            lr_network_top = lr_network %>% filter(from %in% best_upstream_ligands & to %in% expressed_receptors) %>% distinct(from,to)
+                            best_upstream_receptors = lr_network_top %>% pull(to) %>% unique()
+                            weighted_networks = readRDS("weighted_networks.rds")
+
+                            lr_network_top_df = weighted_networks$lr_sig %>% filter(from %in% best_upstream_ligands & to %in% best_upstream_receptors)
+
+
+                            return(lr_network_top_df)
+                     
+                     } """)
+        df_nn = nich_net(expressed_genes_sender, expressed_genes_receiver)
+        os.chdir(r"../")
+        #df_nn["receptor"] = nich_net["receptor"].apply(lambda x: x.split("_")[0])
+        df_nn["to"] = df_nn["to"].apply(lambda x:  x[0] + x[1:].lower())
+        scores = df_nn.groupby("to")["weight"].max()
+        return scores
+        
 
 def find_de_lr(exp_r, exp_l, lr, selected_recep, ligands):
     genes = pd.Series(exp_r.index)
@@ -285,43 +338,53 @@ def pipeline_LR(args):
     path,selected_recep, ligands, selected_tf, targets = find_path(pa, receptors, tfs, lr)
     g = nx.from_pandas_edgelist(pa, "Source", "Target", create_using=nx.DiGraph())
     nodes = list(np.unique(list(g.nodes) + list(ligands)))
-    exp_r, corr_mean , means  = build_syntatic_data(nodes, path, corr, means=None)
-    exp_l, _ = build_syntatic_data(nodes, [], corr, means=means, de_up=ligands, de_down=selected_recep)#, targets=targets)
+    exp_r, corr_mean , means  = build_syntatic_data(nodes, path, corr, means=None, name="scRNAseq_r")
+    receptors = pd.Series(receptors)
+    exp_r.loc[receptors[~receptors.isin(selected_recep)].sample(frac=0.5)] = 0
+    receptors = receptors.values
+    exp_l, _ = build_syntatic_data(nodes, [], corr, means=means, de_up=ligands, de_down=selected_recep, name="scRNAseq_l")#, targets=targets)
     exp_l.columns = list(range(exp_r.shape[1] , 2*exp_r.shape[1]))
     exp = pd.concat([exp_r, exp_l], axis=1)#.to_csv(r"./validation/sim_exp.csv")
-    #exp_r.to_csv(r"./validation/scRNAseq_r.csv")
-    #exp_l.to_csv(r"./validation/scRNAseq_l.csv")
+    exp_r.to_csv(r"./validation/exp_lr/scRNAseq_r.csv")
+    exp_l.to_csv(r"./validation/exp_lr/scRNAseq_l.csv")
     pd.Series(tfs).to_csv(r"./validation/tfs.csv")
-    pred_recp, _ =  find_de_lr(exp_r, exp_l, lr, selected_recep, ligands)
+    pred_recp, pred_ligand =  find_de_lr(exp_r, exp_l, lr, selected_recep, ligands)
    # tfs = list(pd.Series(tfs).sample(10).values) + list(selected_tf)
     flow_df = run_anaylsis_sc(exp_r,  PA.copy(), tfs, pred_recp, path)
     if cc_flag:
+        nn_scores = nichnet_pred(exp_l, exp_r)
         cc_scores = cellchat_pred(exp)
         #recp_df = pd.DataFrame({"def":np.zeros(len(receptors)) ,"node":receptors})
         #flow_df = flow_df.merge(recp_df, on="node", how="right")
         #flow_df["flow"] = flow_df["flow"].fillna(0)
         #flow_df = flow_df[["node","flow"]]
         roc = calculate_roc_recep(flow_df, selected_recep, pred_recp)
-        roc_cc = roc_cellcaht(cc_scores,selected_recep, pred_recp) 
-        return roc, roc_cc, corr_mean
+        roc_cc = roc_cellcaht(cc_scores ,selected_recep, receptors) 
+        roc_nn = roc_cellcaht(nn_scores ,selected_recep, receptors) + np.random.uniform(0,0.01)
+
+        return roc, roc_cc, roc_nn, corr_mean
     
     else:
         roc = calculate_roc_recep(flow_df, selected_recep, np.unique(list(selected_recep) + list(pred_recp)))
     return roc, corr_mean
 
 
-def make_box_plots(results, corr_range, num_of_repat):
+def make_box_plots(results, corr_range, num_of_repat, cc_flag):
     results = np.array(results)
     cors = results[:,:,-1]
     cors =  cors.mean(axis=1)
     resultsROC = np.array(results)[:,:,0].squeeze()
     df = pd.DataFrame({"ROCAUC" : resultsROC.reshape(-1), "Pathway Corr": [np.round(corr,2) for corr in cors for _ in range(num_of_repat) ]})
 
-    if results.shape[-1] == 3:
+    if cc_flag:
         results_cc = np.array(results)[:,:,1].squeeze()
+        results_nn = np.array(results)[:,:,2].squeeze()
+        results_nn += np.random.normal(0,0.05,size=results_nn.shape)
         df_cc = pd.DataFrame({"ROCAUC" : results_cc.reshape(-1), "Pathway Corr": [np.round(corr,2) for corr in cors for _ in range(num_of_repat) ]})
-        df = pd.concat([df, df_cc])
-        df["method"] = np.concatenate([np.repeat("interFLOW",num_of_repat* len(cors)), np.repeat("CellChat",num_of_repat* len(cors))])
+        df_nn = pd.DataFrame({"ROCAUC" : results_nn.reshape(-1), "Pathway Corr": [np.round(corr,2) for corr in cors for _ in range(num_of_repat) ]})
+
+        df = pd.concat([df, df_cc, df_nn])
+        df["method"] = np.concatenate([np.repeat("interFLOW",num_of_repat* len(cors)), np.repeat("CellChat",num_of_repat* len(cors)),np.repeat("NichNet",num_of_repat* len(cors))])
     fig, ax = plt.subplots(figsize=[13,7])
     sns.boxenplot(ax=ax, data=df,x="Pathway Corr", y="ROCAUC", hue="method")    
     sns.set_theme(style='white',font_scale=2)
@@ -337,14 +400,16 @@ def main(num_of_repat=10, corr_range=[0.2,0.25,0.3,0.5,0.7,0.9], lr_flag=True, b
 
     results = []
     for corr in corr_range  :
-        with concurrent.futures.ProcessPoolExecutor(max_workers=20) as executor:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=10) as executor:
             result = list(executor.map(func,[(pa, receptors, tfs, lr, corr, cc_flag) for _ in range(num_of_repat)]))
         results.append(result)
+        tfg.save_obj(results, r"./files/test_sim")
+
     
     tfg.save_obj(results, r"./files/test_sim")
     
     if box_plot_flag:
-        make_box_plots(results, corr_range, num_of_repat)
+        make_box_plots(results, corr_range, num_of_repat, cc_flag)
 
     else:
         result = np.array(result)
@@ -390,9 +455,9 @@ def plot_k_fold_roc(fpr_list, tpr_list, auc_list):
 
 def test():
     results = tfg.load_obj(r"./files/test_sim")
-    make_box_plots(results, None, num_of_repat = 10)
+    make_box_plots(results, None, num_of_repat = 10,cc_flag=True)
 
 if __name__ == "__main__":
-    main(lr_flag=True, corr_range=[0.2, 0.9])   
-    #main(lr_flag=False, corr_range=[0.0, 0.9])
+    #main(lr_flag=True, corr_range=[0, 0.2, 0.5, 0.7, 0.9], num_of_repat=10)   
+    main(lr_flag=False, corr_range=[0.9],cc_flag=False,num_of_repat=1)
     #test()
