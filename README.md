@@ -11,8 +11,8 @@ Results: We developed the interFLOW framework to map the potential ligand-recept
 To use interFLOW with Conda, follow these steps:
 
 1. Clone the Git repository to your local machine.
-2. Create a new Conda environment using the provided `interFLOW\files\env.yaml` file.
-3. Execute the `packages.R` file using R v4.1.1 or a later version to update all relevant packages.
+2. Create a new Conda environment using the provided `interFLOW\files\env.yaml` file or using pip requirements.txt.
+3. Execute the `packages.R` file using R v4.1.1 or a later version to update all relevant packages. 
 
 ## Running the Pipeline
 
